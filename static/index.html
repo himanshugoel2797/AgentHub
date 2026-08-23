@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>agent-hub</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--edge:#2a3139;--fg:#dbe2ea;--dim:#8b98a5;--acc:#4da3ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:10px 18px;border-bottom:1px solid var(--edge);background:var(--panel)}
+header h1{font-size:16px;margin:0}
+#sched{color:var(--dim)} #sched b{color:var(--warn)}
+main{display:grid;grid-template-columns:340px 1fr;gap:14px;padding:14px;max-width:1500px;margin:0 auto}
+section{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:12px}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:0 0 8px}
+.proj{border-top:1px solid var(--edge);padding:8px 0}
+.proj .name{font-weight:600}
+.proj .desc{color:var(--dim);font-size:12px}
+.proj form{display:flex;gap:6px;margin-top:6px}
+input,button,textarea{font:inherit;background:#0b0f14;color:var(--fg);border:1px solid var(--edge);border-radius:6px;padding:5px 8px}
+input:focus{outline:1px solid var(--acc)}
+button{cursor:pointer} button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);color:#04121f;border-color:var(--acc);font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--dim);text-align:left;font-weight:500;padding:4px 6px;border-bottom:1px solid var(--edge)}
+td{padding:5px 6px;border-bottom:1px solid #1c222b;vertical-align:top}
+.st{font-weight:600}.st.running{color:var(--acc)}.st.done{color:var(--ok)}.st.queued{color:var(--dim)}
+.st.failed,.st.timeout,.st.blocked{color:var(--bad)}.st.cancelled{color:var(--warn)}
+.muted{color:var(--dim);font-size:12px}
+#mgmtlog{height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin:8px 0}
+.msg{padding:7px 10px;border-radius:8px;max-width:85%;white-space:pre-wrap}
+.msg.user{align-self:flex-end;background:#1a3a5c}
+.msg.agent{align-self:flex-start;background:#20262e}
+#chatrow{display:flex;gap:8px}
+#chatin{flex:1}
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--edge);border-radius:10px;width:min(900px,90vw)}
+dialog pre{max-height:70vh;overflow:auto;font-size:12px;background:#0b0f14;padding:10px;border-radius:6px}
+.err{color:var(--bad);font-size:12px;margin-top:6px;min-height:14px}
+</style>
+</head>
+<body>
+<header>
+  <h1>agent-hub</h1>
+  <span id="sched"></span>
+  <label style="margin-left:auto"><input type="checkbox" id="schedToggle"> scheduler</label>
+  <input id="schedStart" type="number" min="0" max="23" style="width:52px" title="start hour">
+  <input id="schedEnd" type="number" min="0" max="23" style="width:52px" title="end hour">
+</header>
+<main>
+<section>
+  <h2>Projects</h2>
+  <form id="newproj">
+    <input id="np-name" placeholder="name" style="width:100%" required>
+    <input id="np-desc" placeholder="description (optional)" style="width:100%">
+    <button class="primary" style="width:100%">Create project</button>
+    <div class="err" id="np-err"></div>
+  </form>
+  <div id="projects"></div>
+</section>
+<main style="padding:0;border:none;background:none;display:block">
+<section style="margin-bottom:14px">
+  <h2>Threads</h2>
+  <table><thead><tr><th>id</th><th>project</th><th>task</th><th>status</th><th></th></tr></thead>
+  <tbody id="threads"></tbody></table>
+</section>
+<section>
+  <h2>Management chat</h2>
+  <div id="mgmtlog"></div>
+  <div id="chatrow">
+    <input id="chatin" placeholder='e.g. "create a project scraper that fetches HN top stories nightly and add it to the scheduler window"'>
+    <button class="primary" id="chatsend">Send</button>
+  </div>
+  <div class="err" id="chaterr"></div>
+</section>
+</main>
+<dialog id="logdlg"><h2 id="logtitle" style="color:var(--fg)"></h2><pre id="logbody"></pre>
+<form method="dialog"><button>close</button><button id="logrefresh" type="button">refresh</button></form></dialog>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});if(!r.ok)throw (await r.json()).detail||r.statusText;return r.json();}
+
+function renderProjects(projects,threads){
+ $('#projects').innerHTML=projects.map(p=>{
+  const running=threads.some(t=>t.project===p.name&&['running','queued'].includes(t.status));
+  return `<div class="proj">
+   <div class="name">${esc(p.name)} ${running?'<span class="st running">● busy</span>':''}</div>
+   <div class="desc">${esc(p.description||'')}</div>
+   <form data-proj="${esc(p.name)}">
+     <input name="task" placeholder="add backlog task..." style="flex:1">
+     <button>+</button>
+     <button type="button" class="runbacklog" data-proj="${esc(p.name)}" title="queue next backlog item">▶ backlog</button>
+   </form></div>`;}).join('')||'<div class="muted">no projects yet</div>';
+ $('#projects').querySelectorAll('form').forEach(f=>f.onsubmit=async e=>{e.preventDefault();
+   try{await api(`/api/projects/${f.dataset.proj}/tasks`,{task:f.task.value});f.task.value='';refresh();}catch(err){alert(err);}});
+ $('#projects').querySelectorAll('.runbacklog').forEach(b=>b.onclick=async()=>{
+   try{await api(`/api/projects/${b.dataset.proj}/threads`,{use_backlog:true});refresh();}catch(err){alert(err);}});
+}
+
+function renderThreads(threads){
+ $('#threads').innerHTML=threads.slice(0,40).map(t=>`<tr>
+  <td class="muted">${esc(t.id)}</td><td>${esc(t.project)}</td>
+  <td>${esc((t.prompt_head||'').slice(0,60))}</td>
+  <td><span class="st ${esc(t.status)}">${esc(t.status)}</span>${t.result?`<div class="muted">${esc(String(t.result).slice(0,80))}</div>`:''}</td>
+  <td nowrap>
+    <button data-log="${t.id}">log</button>
+    ${t.status==='running'||t.status==='queued'?`<button data-cancel="${t.id}">cancel</button>`:''}
+    ${t.status==='done'?`<button data-merge="${t.id}">merge</button>`:''}
+  </td></tr>`).join('')||'<tr><td colspan=5 class=muted>no threads yet</td></tr>';
+ $('#threads').querySelectorAll('[data-log]').forEach(b=>b.onclick=()=>showLog(b.dataset.log));
+ $('#threads').querySelectorAll('[data-cancel]').forEach(b=>b.onclick=async()=>{await api(`/api/threads/${b.dataset.cancel}/cancel`);refresh();});
+ $('#threads').querySelectorAll('[data-merge]').forEach(b=>b.onclick=async()=>{
+   try{alert(await api(`/api/threads/${b.dataset.merge}/merge`).then(r=>r.result));refresh();}catch(e){alert('merge failed: '+e);}});
+}
+
+async function showLog(tid){
+ $('#logtitle').textContent='log '+tid; $('#logbody').textContent='loading...';
+ $('#logdlg').showModal();
+ const load=async()=>{$('#logbody').textContent=await fetch('/api/logs/'+tid).then(r=>r.text());};
+ $('#logrefresh').onclick=load;
+ await load();
+}
+
+let schedInit=false;
+function renderSched(s){
+ const sch=s.scheduler;
+ if(!schedInit){$('#schedToggle').checked=sch.enabled;$('#schedStart').value=sch.start_hour;$('#schedEnd').value=sch.end_hour;schedInit=true;}
+ $('#sched').innerHTML=`scheduler <b>${sch.enabled?`ON ${sch.start_hour}:00–${sch.end_hour}:00`:'off'}</b>`;
+}
+$('#schedToggle').onchange=$('#schedStart').onchange=$('#schedEnd').onchange=async()=>{
+ try{await api('/api/scheduler',{enabled:$('#schedToggle').checked,start_hour:+$('#schedStart').value,end_hour:+$('#schedEnd').value});refresh();}catch(e){alert(e);}
+};
+
+$('#newproj').onsubmit=async e=>{e.preventDefault();$('#np-err').textContent='';
+ try{await api('/api/projects',{name:$('#np-name').value,description:$('#np-desc').value});$('#np-name').value='';$('#np-desc').value='';refresh();}
+ catch(err){$('#np-err').textContent=err;}};
+
+$('#chatsend').onclick=send;
+$('#chatin').onkeydown=e=>{if(e.key==='Enter')send();};
+async function send(){
+ const m=$('#chatin').value.trim();if(!m)return;
+ $('#chatin').value='';$('#chaterr').textContent='';
+ logMsg('user',m);
+ const busy=document.createElement('span');busy.className='msg agent';busy.textContent='…thinking';
+ $('#mgmtlog').appendChild(busy);
+ try{
+  const r=await api('/api/mgmt',{message:m});
+  busy.remove();logMsg('agent',r.reply);
+ }catch(e){busy.remove();$('#chaterr').textContent=e;}
+ refresh();
+}
+function logMsg(role,text){
+ const d=document.createElement('div');d.className='msg '+role;d.textContent=text;
+ $('#mgmtlog').appendChild(d);$('#mgmtlog').scrollTop=1e9;
+}
+
+async function refresh(){
+ try{
+  const s=await api('/api/state');
+  renderSched(s.settings);
+  renderProjects(s.projects,s.threads);
+  renderThreads(s.threads);
+ }catch(e){}
+}
+refresh();setInterval(refresh,2500);
+</script>
+</body>
+</html>
