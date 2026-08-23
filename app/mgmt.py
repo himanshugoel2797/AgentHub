@@ -23,7 +23,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "set_config", "description": "Set max_concurrent or timeout_minutes", "parameters": {"type": "object", "properties": {"key": {"type": "string", "enum": ["max_concurrent", "timeout_minutes"]}, "value": {"type": "integer"}}, "required": ["key", "value"]}}},
     {"type": "function", "function": {"name": "merge_thread", "description": "Fast-forward merge a done thread's branch into its base branch", "parameters": {"type": "object", "properties": {"thread_id": {"type": "string"}}, "required": ["thread_id"]}}},
     {"type": "function", "function": {"name": "read_app_file", "description": "Read a file inside the agent-hub app directory", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "write_app_file", "description": "Write/overwrite a file inside the agent-hub directory (app/, static/) to improve the tool itself. Changes are committed to the hub git repo. Call restart_service afterwards.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
+    {"type": "function", "function": {"name": "write_app_file", "description": "Write/overwrite a file inside the agent-hub directory: anything under app/, static/, or a top-level *.md doc (README.md etc.). Changes are committed to the hub git repo. Call restart_service after changing app code.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
     {"type": "function", "function": {"name": "restart_service", "description": "Restart the agent-hub systemd service to apply code/config changes", "parameters": {"type": "object", "properties": {}, "required": []}}},
 ]
 
@@ -33,7 +33,7 @@ Projects are git repos in ~/agent-projects with a BACKLOG.md of '- [ ] task' ite
 Threads are agent jobs; each runs on its own agent/hub-* branch and is merged by fast-forward.
 Your job:
 - Fulfil the user's operational requests using the tools (create projects, add tasks, run jobs, configure scheduling).
-- When asked to improve or change the web interface/tool itself, use read_app_file/write_app_file (paths are relative to the hub root; app code lives in app/, UI in static/index.html) then restart_service. Keep changes small and working; python syntax errors will break the service, so be careful.
+- When asked to improve or change the web interface/tool itself, use read_app_file/write_app_file (paths are relative to the hub root; app code lives in app/, UI in static/index.html, and you may maintain top-level *.md docs such as README.md) then restart_service for code changes. Keep changes small and working; python syntax errors will break the service, so be careful.
 - Be concise in final answers. Summarize what you did.
 - Never delete projects or user data."""
 
@@ -103,8 +103,11 @@ def execute(name: str, args: dict) -> str:
         if name == "write_app_file":
             path = _safe_path(args["path"])
             rel = path.relative_to(ROOT)
-            if not (str(rel).startswith("app/") or str(rel).startswith("static/")):
-                raise ValueError("only files under app/ or static/ may be written")
+            allowed = str(rel).startswith(("app/", "static/")) or (
+                "/" not in rel.as_posix() and rel.suffix == ".md"
+            )
+            if not allowed:
+                raise ValueError("only app/, static/, or top-level *.md files may be written")
             if path.suffix == ".py":
                 compile(args["content"], str(path), "exec")
             path.parent.mkdir(parents=True, exist_ok=True)
